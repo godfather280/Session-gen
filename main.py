@@ -476,7 +476,7 @@ class SessionBot:
                 "Use /cancel to stop the process."
             )
         
-        @self.app.on_message(filters.command("relogin")
+        @self.app.on_message(filters.command("relogin"))
          async def relogin_handler(client, message: Message):
             """Relogin using session string"""
             user_id = message.from_user.id
