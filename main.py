@@ -23,7 +23,7 @@ from handlers.groups_handler import handle_groups_in
 from handlers.group_links import handle_get_group_link, get_invite_link
 
 # Import utilities
-from utils.helpers import safe_int, split_message, create_back_keyboard
+from utils.helpers import safe_int, split_message
 
 # Configure logging
 logging.basicConfig(
