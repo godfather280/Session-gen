@@ -19,7 +19,7 @@ from handlers.chats_handler import handle_chats
 from handlers.vanish_handler import handle_vanish, confirm_vanish
 from handlers.admin_in_handler import handle_admin_in
 from handlers.admin_powers import show_admin_powers_menu, ban_user, mute_user
-from handlers.groups_handler import Handle_groups_in
+from handlers.groups_handler import handle_groups_in
 from handlers.group_links import handle_get_group_link, get_invite_link
 
 # Import utilities
