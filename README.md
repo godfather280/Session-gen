@@ -4,7 +4,7 @@
 </h2>
 <a href="https://youtu.be/Qg9LxRHLbAk?feature=shared"><img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif"></a>
 
-<p align="center"><a href="https://t.me/carino_here"><img src="https://files.catbox.moe/npugjz.jpg"></a></p>
+<p align="center"><a href="https://t.me/Iwontfuck"><img src="https://files.catbox.moe/npugjz.jpg"></a></p>
 
 <a href="https://youtu.be/Qg9LxRHLbAk?feature=shared"><img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif"></a>
 
