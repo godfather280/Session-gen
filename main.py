@@ -10,7 +10,7 @@ from pyrogram.errors import (
     PhoneNumberInvalid, PhoneCodeExpired,
     AuthKeyUnregistered, FloodWait
 )
-import config
+from config import Config
 
 # Import admin panel handlers
 from handlers.admin_panel import show_admin_panel
@@ -27,7 +27,7 @@ from utils.helpers import safe_int, split_message
 
 # Configure logging
 logging.basicConfig(
-    level=getattr(logging, config.LOG_LEVEL),
+    level=getattr(logging, Config.LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('logs/bot.log'),
