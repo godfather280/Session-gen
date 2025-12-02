@@ -19,7 +19,7 @@ class Config:
     # Session storage
     SESSION_FOLDER = "sessions"
     
-    # Logging
+    # Logging - ADD THIS LINE
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     
     @staticmethod
